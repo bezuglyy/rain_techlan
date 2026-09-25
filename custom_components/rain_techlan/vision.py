@@ -36,19 +36,12 @@ BUCKET_FALLBACK = {
 }
 
 # Минимально значимое изменение признака (иначе шум, а не вода)
-MIN_ABS = {
-    "gloss": 0.010,
-    "bright": 0.050,
-    "ripple": 2.0,
-    "sat": 3.0,
-    "sharp_rel": 0.25,
-    "mean_rel": 0.06,
-    "std_rel": 0.10,
-}
+MIN_ABS = {"gloss": 0.004, "bright": 0.020, "ripple": 1.0, "sat": 2.0,
+           "sharp_rel": 0.12, "mean_rel": 0.05, "std_rel": 0.05}
 
 # Веса признаков в оценке (ночь — опора на блики/рябь, день — плюс затемнение)
-WEIGHTS_NIGHT = {"gloss": 0.5, "ripple": 0.3, "sharp": 0.2}
-WEIGHTS_LIGHT = {"gloss": 0.4, "ripple": 0.25, "sharp": 0.15, "mean_down": 0.2}
+WEIGHTS_NIGHT = {"gloss": 0.3, "ripple": 0.15, "sharp": 0.15, "mean_down": 0.4}
+WEIGHTS_LIGHT = {"gloss": 0.35, "ripple": 0.2, "sharp": 0.1, "mean_down": 0.35}
 
 VERDICT_WET = 0.5  # «дождь идёт»
 VERDICT_MAYBE = 0.25  # «возможно»
@@ -159,6 +152,8 @@ def build_reference(
             stat[m] = {
                 "median": round(float(np.median(vals)), 4),
                 "p05": round(float(np.percentile(vals, 5)), 4),
+                "p25": round(float(np.percentile(vals, 25)), 4),
+                "p75": round(float(np.percentile(vals, 75)), 4),
                 "p95": round(float(np.percentile(vals, 95)), 4),
                 "n": int(vals.size),
             }
@@ -168,8 +163,13 @@ def build_reference(
 
 
 def _need(m: str, stat: dict[str, float]) -> float:
-    """Значимый порог для метрики: выход за p95 ИЛИ абсолютный минимум."""
+    """Значимый порог для метрики: выход за границу ИЛИ абсолютный минимум."""
     med, hi, lo = stat["median"], stat["p95"], stat["p05"]
+    if m == "mean":
+        # затемнение — устойчивый сдвиг яркости: сравниваем с p25, а не с p05
+        return max(med - stat.get("p25", lo), MIN_ABS["mean_rel"] * abs(med))
+    if m == "std":
+        return max(stat.get("p75", hi) - med, MIN_ABS["std_rel"] * abs(med))
     if m == "gloss":
         return max(hi - med, MIN_ABS["gloss"])
     if m == "bright":
@@ -298,3 +298,38 @@ def combine(results: list[dict[str, Any]]) -> dict[str, Any]:
         "zone": best.get("name") or best.get("zone"),
         "camera": best.get("camera"),
     }
+
+
+# ---------------------------------------------------------------- временное сравнение
+RECENT_N = 40           # сколько последних СУХИХ замеров держим как «свежий эталон»
+TEMPORAL_MIN = 5        # меньше — доверяем только конверту
+
+
+def temporal_score(cur: dict, history: list | None, bucket: str = "night") -> dict:
+    """Сравнение с недавними СУХИМИ кадрами той же камеры/зоны.
+
+    «Стало темнее / появились блики / рябь» = намокло. Ночью в ИК это основной признак.
+    history: список пар (feats, dry) — последние замеры (dry=True попадают в эталон).
+    """
+    vals = [f for f, dry in (history or []) if dry]
+    vals = vals[-RECENT_N:]
+    if len(vals) < TEMPORAL_MIN:
+        return {"score": 0.0, "n": len(vals)}
+    base = {m: float(np.median([float(v.get(m, 0.0)) for v in vals])) for m in FEATURES}
+    def _up(m: str, rel: float, absol: float = 0.0) -> float:
+        b = base.get(m, 0.0); v = float(cur.get(m, 0.0))
+        need = max(rel * abs(b), absol, 1e-6)
+        return max(0.0, (v - b) / need)
+    def _down(m: str, rel: float) -> float:
+        b = base.get(m, 0.0); v = float(cur.get(m, 0.0))
+        need = max(rel * abs(b), 1e-6)
+        return max(0.0, (b - v) / need)
+    parts = {"mean_down": _down("mean", 0.03), "gloss": _up("gloss", 0.5, 0.004),
+             "ripple": _up("ripple", 0.15, 1.0)}
+    w = ({"mean_down": 0.55, "gloss": 0.25, "ripple": 0.20} if bucket == "night"
+         else {"mean_down": 0.45, "gloss": 0.35, "ripple": 0.20})
+    score = sum(w[k] * min(1.0, parts[k]) for k in w)
+    return {"score": round(max(0.0, min(1.0, score)), 3), "n": len(vals),
+            "dev": {k: round(v, 2) for k, v in parts.items()},
+            "base": {k: round(base[k], 2) for k in ("mean", "gloss", "ripple")},
+            "cur": {k: round(float(cur.get(k, 0.0)), 2) for k in ("mean", "gloss", "ripple")}}
