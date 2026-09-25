@@ -132,3 +132,10 @@ URL_TEST = "/api/rain_techlan/scan"
 URL_LEARN = "/api/rain_techlan/learn"
 URL_EVENTS = "/api/rain_techlan/events"
 URL_INTERLOCKS = "/api/rain_techlan/interlocks"
+
+# Прогноз дождя: сущности, у которых «on» = дождь ожидается (превентивный запрет старта)
+CONF_FORECAST_ENTITIES = "forecast_entities"
+DEFAULT_FORECAST_ENTITIES: list = []      # напр. ["binary_sensor.oroshenie_forecast_rain_delay"]
+SEASON_RELAX_DAYS = 3                     # столько сухих дней → порог мягче на SEASON_RELAX_STEP
+SEASON_RELAX_STEP = 0.05
+SEASON_MIN_THRESHOLD = 0.35
