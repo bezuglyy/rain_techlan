@@ -42,6 +42,7 @@ class RainTechlanPanel extends HTMLElement {
         .card { background: var(--card-background-color); border:1px solid var(--divider-color); border-radius:12px; padding:12px 14px; margin:10px 0; }
         .grid { display:grid; gap:12px; grid-template-columns: minmax(0,2fr) minmax(0,1fr); }
         @media (max-width: 900px){ .grid{ grid-template-columns: 1fr; } }
+        @media (max-width: 700px){ .frames.n2, .frames.n4 { grid-template-columns: 1fr; } button { padding:8px 12px; } }
         .badge { display:inline-block; padding:3px 10px; border-radius:999px; font-weight:600; font-size:13px; }
         .dry { background:#15803d22; color:#15803d; border:1px solid #15803d55; }
         .maybe { background:#b4530922; color:#b45309; border:1px solid #b4530955; }
@@ -96,6 +97,24 @@ class RainTechlanPanel extends HTMLElement {
         </div>
       </div>
 
+      <div class="card" id="nowcard">
+        <div class="row" style="justify-content:space-between; align-items:center">
+          <div class="row" style="gap:14px">
+            <span id="nowVerdict" class="badge mutedbadge">нет данных</span>
+            <span class="muted small">источники: <b id="srcCam">камера —</b> · <b id="srcTruth">датчик —</b></span>
+            <span class="muted small" id="nowIrrigation"></span>
+            <span class="muted small" id="nowDelay"></span>
+            <span class="muted small" id="nowFresh"></span>
+          </div>
+          <div class="row">
+            <button id="p1">Пауза 1 дн</button><button id="p2">2 дн</button><button id="p3">3 дн</button><button id="p7">7 дн</button>
+            <button id="p0" class="danger">Снять паузу</button>
+          </div>
+        </div>
+        <div id="spark" style="margin-top:8px"></div>
+        <div id="errBanner" style="display:none; margin-top:8px; padding:6px 10px; border-radius:8px; background:#b91c1c22; border:1px solid #b91c1c66; color:#b91c1c; font-size:13px"></div>
+      </div>
+
       <div class="grid">
         <div class="card">
           <div class="row" style="justify-content:space-between">
@@ -107,6 +126,9 @@ class RainTechlanPanel extends HTMLElement {
                 <option value="4">4 камеры</option>
               </select>
               <button id="draw">＋ Добавить зону</button>
+              <button id="zExport">⭳ Зоны</button>
+              <button id="zImport">⭱ Импорт зон</button>
+              <input id="zFile" type="file" accept=".json" style="display:none">
               <button id="edit">✎ Редактировать зоны</button>
               <label class="small" id="camselLabel">Камера:</label>
               <select id="camsel"></select>
@@ -150,7 +172,17 @@ class RainTechlanPanel extends HTMLElement {
       </div>
 
       <div class="grid">
-        <div class="card"><b>Журнал</b><div id="journal" style="max-height:260px; overflow:auto"></div></div>
+        <div class="card">
+          <div class="row" style="justify-content:space-between">
+            <b>Журнал</b>
+            <div class="row">
+              <select id="jf"><option value="">все</option><option value="rain">дождь</option>
+                <option value="action">действия</option><option value="error">ошибки</option></select>
+              <button id="jCsv">⭳ CSV</button><button id="jJson">⭳ JSON</button>
+            </div>
+          </div>
+          <div id="journal" style="max-height:260px; overflow:auto"></div>
+        </div>
         <div class="card">
           <b>Запреты полива</b>
           <div class="muted small">Правило: сенсор → условие → блокировка запуска.</div>
@@ -173,8 +205,59 @@ class RainTechlanPanel extends HTMLElement {
     this.$("layout").onchange = (e) => {
       this._layout = Number(e.target.value);
       localStorage.setItem("rain_layout", String(this._layout));
-      this._renderFrames();
+      // карточка «Сейчас»: вердикт, источники, полив, задержка, свежесть кадра
+    const sources = det.sources || {};
+    const srcCam = this.$("srcCam"), srcTruth = this.$("srcTruth");
+    if (srcCam) {
+      const camOk = det.camera_ok !== false;
+      srcCam.textContent = "камера " + (camOk ? (sources.camera ? "мокро ✓" : "сухо") : "нет данных");
+      srcCam.style.color = !camOk ? "#b45309" : sources.camera ? "#b91c1c" : "#15803d";
+      srcTruth.textContent = "датчик " + (sources.truth ? "дождь ✓" : "сухо");
+      srcTruth.style.color = sources.truth ? "#b91c1c" : "#15803d";
+      this.$("nowVerdict").className = "badge " + (det.wet ? "wet" : "mutedbadge");
+      this.$("nowVerdict").textContent = det.wet ? "ДОЖДЬ" : "сухо";
+      const irrS = this._hass.states["binary_sensor.oroshenie_any_zone_running"];
+      this.$("nowIrrigation").textContent = irrS && irrS.state === "on" ? "полив идёт" : "полив не идёт";
+      const dl = this._hass.states["sensor.oroshenie_rain_delay"];
+      this.$("nowDelay").textContent = "задержка: " + (dl ? dl.state : "—") + " дн";
+      const age = det.ts ? Math.round((Date.now() - Date.parse(det.ts)) / 1000) : null;
+      this.$("nowFresh").textContent = age !== null ? `кадр ${age} с назад` : "";
+      const errs = det.errors || [];
+      const banner = this.$("errBanner");
+      if (banner) {
+        banner.style.display = errs.length ? "" : "none";
+        banner.textContent = errs.length ? "⚠ Камеры: " + errs.join("; ") : "";
+      }
+    }
+    // мини-график 24 ч: оценка камеры (линия) + метки «истины» (точки)
+    const series = det.series || [];
+    const sp = this.$("spark");
+    if (sp) {
+      if (series.length < 2) {
+        sp.innerHTML = `<span class="muted small">график появится после нескольких проходов</span>`;
+      } else {
+        const W = 640, H = 60, thr = det.effective_threshold ?? det.threshold ?? 0.5;
+        const pts = series.map((r, i) => {
+          const x = (i / (series.length - 1)) * W;
+          const y = H - Math.max(0, Math.min(1, Number(r.score) || 0)) * H;
+          return `${x.toFixed(1)},${y.toFixed(1)}`;
+        }).join(" ");
+        const truth = series.map((r, i) => r.truth
+          ? `<circle cx="${((i / (series.length - 1)) * W).toFixed(1)}" cy="6" r="2.5" fill="#b91c1c"/>` : "").join("");
+        const ty = (H - thr * H).toFixed(1);
+        sp.innerHTML = `<svg viewBox="0 0 ${W} ${H + 10}" style="width:100%;height:80px">
+            <line x1="0" y1="${ty}" x2="${W}" y2="${ty}" stroke="#64748b" stroke-dasharray="4 4"/>
+            <polyline fill="none" stroke="#0f766e" stroke-width="2" points="${pts}"/>
+            ${truth}
+          </svg>
+          <div class="muted small">24 ч: оценка камеры (линия), пунктир — порог ${thr}, красные точки — «истина» (датчик)</div>`;
+      }
+    }
+    this._renderFrames();
     };
+    for (const [id, days] of [["p1",1],["p2",2],["p3",3],["p7",7],["p0",0]]) {
+      this.$("${id}").onclick = () => this._svc("rain_techlan", "set_rain_delay", { days });
+    }
     this.$("edit").onclick = () => {
       this._editing = !this._editing;
       localStorage.setItem("rain_zone_edit", this._editing ? "1" : "0");
@@ -184,7 +267,31 @@ class RainTechlanPanel extends HTMLElement {
     this.$("camsel").onchange = (e) => {
       this._oneCam = e.target.value;
       localStorage.setItem("rain_one_cam", this._oneCam);
-      this._renderFrames();
+      // карточка «Сейчас»: вердикт, источники, полив, задержка, свежесть кадра
+    const sources = det.sources || {};
+    const srcCam = this.$("srcCam"), srcTruth = this.$("srcTruth");
+    if (srcCam) {
+      const camOk = det.camera_ok !== false;
+      srcCam.textContent = "камера " + (camOk ? (sources.camera ? "мокро ✓" : "сухо") : "нет данных");
+      srcCam.style.color = !camOk ? "#b45309" : sources.camera ? "#b91c1c" : "#15803d";
+      srcTruth.textContent = "датчик " + (sources.truth ? "дождь ✓" : "сухо");
+      srcTruth.style.color = sources.truth ? "#b91c1c" : "#15803d";
+      this.$("nowVerdict").className = "badge " + (det.wet ? "wet" : "mutedbadge");
+      this.$("nowVerdict").textContent = det.wet ? "ДОЖДЬ" : "сухо";
+      const irrS = this._hass.states["binary_sensor.oroshenie_any_zone_running"];
+      this.$("nowIrrigation").textContent = irrS && irrS.state === "on" ? "полив идёт" : "полив не идёт";
+      const dl = this._hass.states["sensor.oroshenie_rain_delay"];
+      this.$("nowDelay").textContent = "задержка: " + (dl ? dl.state : "—") + " дн";
+      const age = det.ts ? Math.round((Date.now() - Date.parse(det.ts)) / 1000) : null;
+      this.$("nowFresh").textContent = age !== null ? `кадр ${age} с назад` : "";
+      const errs = det.errors || [];
+      const banner = this.$("errBanner");
+      if (banner) {
+        banner.style.display = errs.length ? "" : "none";
+        banner.textContent = errs.length ? "⚠ Камеры: " + errs.join("; ") : "";
+      }
+    }
+    this._renderFrames();
     };
     this.$("edit").classList.toggle("primary", this._editing);
     this.$("frames").classList.toggle("editing", this._editing);
@@ -201,6 +308,29 @@ class RainTechlanPanel extends HTMLElement {
     this.$("thr").onchange = (e) => this._save({ rain_threshold: Number(e.target.value) });
     this.$("truthset").onclick = () => this._save({ truth_entity: this.$("truth").value.trim() });
     this.$("iadd").onclick = () => this._addInterlock();
+    this.$("jf").onchange = () => this._renderJournal();
+    this.$("jCsv").onclick = () => this._exportJournal("csv");
+    this.$("jJson").onclick = () => this._exportJournal("json");
+    this.$("zExport").onclick = () => {
+      const zones = ((this._state || {}).settings || {}).zones || [];
+      const blob = new Blob([JSON.stringify(zones, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = "rain_techlan-zones.json"; a.click();
+    };
+    this.$("zImport").onclick = () => this.$("zFile").click();
+    this.$("zFile").onchange = (ev) => {
+      const f = ev.target.files && ev.target.files[0];
+      if (!f) return;
+      const rd = new FileReader();
+      rd.onload = async () => {
+        try {
+          const zones = JSON.parse(rd.result);
+          if (!Array.isArray(zones)) throw new Error("ожидается массив зон");
+          await this._save({ zones });
+        } catch (e) { this.$("errs").textContent = "Импорт зон: " + e; }
+      };
+      rd.readAsText(f);
+    };
     this.$("menuBtn").onclick = (ev) => {
       ev.stopPropagation();
       const b = this.$("menuBox");
@@ -274,6 +404,30 @@ class RainTechlanPanel extends HTMLElement {
     this.$("thrv").textContent = set.threshold ?? 0.5;
     if (document.activeElement !== this.$("truth")) this.$("truth").value = set.truth_entity || "";
     this.$("rd").value = (this._hass.states["number.poliv_rain_bird_zaderzhka_dozhdia"] || {}).state || 0;
+    // карточка «Сейчас»: вердикт, источники, полив, задержка, свежесть кадра
+    const sources = det.sources || {};
+    const srcCam = this.$("srcCam"), srcTruth = this.$("srcTruth");
+    if (srcCam) {
+      const camOk = det.camera_ok !== false;
+      srcCam.textContent = "камера " + (camOk ? (sources.camera ? "мокро ✓" : "сухо") : "нет данных");
+      srcCam.style.color = !camOk ? "#b45309" : sources.camera ? "#b91c1c" : "#15803d";
+      srcTruth.textContent = "датчик " + (sources.truth ? "дождь ✓" : "сухо");
+      srcTruth.style.color = sources.truth ? "#b91c1c" : "#15803d";
+      this.$("nowVerdict").className = "badge " + (det.wet ? "wet" : "mutedbadge");
+      this.$("nowVerdict").textContent = det.wet ? "ДОЖДЬ" : "сухо";
+      const irrS = this._hass.states["binary_sensor.oroshenie_any_zone_running"];
+      this.$("nowIrrigation").textContent = irrS && irrS.state === "on" ? "полив идёт" : "полив не идёт";
+      const dl = this._hass.states["sensor.oroshenie_rain_delay"];
+      this.$("nowDelay").textContent = "задержка: " + (dl ? dl.state : "—") + " дн";
+      const age = det.ts ? Math.round((Date.now() - Date.parse(det.ts)) / 1000) : null;
+      this.$("nowFresh").textContent = age !== null ? `кадр ${age} с назад` : "";
+      const errs = det.errors || [];
+      const banner = this.$("errBanner");
+      if (banner) {
+        banner.style.display = errs.length ? "" : "none";
+        banner.textContent = errs.length ? "⚠ Камеры: " + errs.join("; ") : "";
+      }
+    }
     this._renderFrames();
     this._renderZonesTable();
     const irr = [];
@@ -281,10 +435,7 @@ class RainTechlanPanel extends HTMLElement {
       if (/^sensor\.oroshenie_(station_\d+|rain_delay|controller_mode)/.test(k)) irr.push(`${k.split(".")[1]}=${val.state}`);
     }
     this.$("irr").textContent = irr.join(" · ");
-    const j = det.journal || [];
-    this.$("journal").innerHTML = j.slice(-40).reverse().map((r) =>
-      `<div class="jrow"><span class="muted small">${String(r.ts).slice(11, 19)}</span> ${r.text}</div>`).join("") || `<div class="muted">пусто</div>`;
-    if (!j.length) this._loadJournal();
+    if (!this._journal) { this._loadJournal(); } else { this._renderJournal(); }
     const rules = set.interlocks || [];
     this.$("ilist").innerHTML = rules.map((r, i) =>
       `<div class="row" style="justify-content:space-between; border-bottom:1px dashed var(--divider-color); padding:4px 0">
@@ -342,7 +493,7 @@ class RainTechlanPanel extends HTMLElement {
     const tb = this.$("zones").querySelector("tbody");
     tb.innerHTML = (set.zones || []).map((z) => {
       const r = (det.results || []).find((x) => x.zone === z.id);
-      return `<tr><td>${z.name}</td><td class="small">${z.camera || "все"}</td><td>${r ? r.score : "—"}</td>
+      return `<tr><td>${z.name}</td><td class="small">${z.camera || "все"}</td><td>${r ? r.score : "—"}<span class="muted small">${r && r.dev && r.dev.mean_down ? " ↓" + r.dev.mean_down : ""}</span></td>
         <td class="row"><button data-edit="${z.id}">✎</button><button data-del="${z.id}" class="danger">✕</button></td></tr>`;
     }).join("") || `<tr><td colspan="4" class="muted">зон нет — нарисуйте на кадре</td></tr>`;
     tb.querySelectorAll("[data-del]").forEach((b) => b.onclick = () => {
@@ -368,10 +519,32 @@ class RainTechlanPanel extends HTMLElement {
     });
   }
 
+  _renderJournal() {
+    const j = this._journal || [];
+    const f = this.$("jf") ? this.$("jf").value : "";
+    const rows = (f ? j.filter((x) => (x.kind || "") === f) : j).slice(-60).reverse();
+    this.$("journal").innerHTML = rows.map((r) =>
+      `<div class="jrow"><span class="muted small">${String(r.ts).slice(11, 19)}</span> [${r.kind}] ${r.text}</div>`).join("") || `<div class="muted">пусто</div>`;
+  }
+
+  _exportJournal(kind) {
+    const j = this._journal || [];
+    let data, mime, name;
+    if (kind === "csv") {
+      data = "ts;kind;text\n" + j.map((r) => `${r.ts};${r.kind};${String(r.text).replace(/;/g, ",")}`).join("\n");
+      mime = "text/csv"; name = "rain_techlan-journal.csv";
+    } else {
+      data = JSON.stringify(j, null, 2); mime = "application/json"; name = "rain_techlan-journal.json";
+    }
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([data], { type: mime })); a.download = name; a.click();
+  }
+
   async _loadJournal() {
     try {
       const r = await this._hass.callApi("GET", `${API}/events`);
-      const j = r.journal || [];
+      this._journal = r.journal || [];
+      const j = this._journal;
       this.$("journal").innerHTML = j.slice(-40).reverse().map((x) =>
         `<div class="jrow"><span class="muted small">${String(x.ts).slice(11, 19)}</span> ${x.text}</div>`).join("") || `<div class="muted">пусто</div>`;
     } catch (e) { /* ignore */ }
