@@ -25,6 +25,8 @@ from homeassistant.core import HomeAssistant
 
 from . import vision
 from .const import (
+    CAM_DRY_CONFIRM,
+    CAM_WET_CONFIRM,
     CAMERA_MAX_SAMPLES,
     CAMERA_THRESHOLD,
     JOURNAL_LIMIT,
@@ -63,6 +65,9 @@ class Detector:
         self.journal_path = self.dir / "journal.jsonl"
 
         self.reference: dict[str, Any] = {}
+        self._recent: dict[str, list] = {}
+        self._wet_streak = 0
+        self._dry_streak = 0
         self.last: dict[str, Any] = {}
         self.journal: list[dict[str, Any]] = []
         self._lock = asyncio.Lock()
@@ -103,10 +108,13 @@ class Detector:
         return await self.hass.async_add_executor_job(self.samples)
 
     def _store_frame(self, camera: str, data: bytes) -> None:
-        """Сохранить последний кадр камеры (executor)."""
+        """Сохранить последний кадр (чистый — панели, размеченный — сущностям image)."""
         try:
             (self.dir / "last").mkdir(exist_ok=True)
             (self.dir / "last" / f"{camera}.jpg").write_bytes(data)
+            # «чистый» кадр в статику панели: зоны панель рисует сама (иначе будут дубли)
+            static = Path(__file__).parent / "frontend" / f"raw_{camera}.jpg"
+            static.write_bytes(data)
         except Exception:  # noqa: BLE001
             pass
 
@@ -150,7 +158,11 @@ class Detector:
     def rebuild_reference(self) -> dict[str, Any]:
         """Пересобрать эталон «сухо» по накопленным сухим замерам."""
         recs = []
+        self._recent = {}
         for r in self.samples():
+            _k = f"{r.get('camera')}|{r.get('zone')}"
+            self._recent.setdefault(_k, []).append((r.get("feats") or {}, bool(r.get("dry"))))
+            self._recent[_k] = self._recent[_k][-1500:]
             recs.append(
                 {
                     "camera": r.get("camera"),
@@ -225,6 +237,13 @@ class Detector:
                         img, cam_zones, self.reference, cid, ts, SITE_UTC_OFFSET
                     )
                     for r in evaluated:
+                        t = vision.temporal_score(r["feats"], self._recent.get(f"{cid}|{r['zone']}"), bucket)
+                        r["temporal"] = t                 # диагностика (базис/текущее)
+                        if t.get("score", 0.0) > (r.get("score") or 0.0):
+                            r["score"] = t["score"]
+                            r["verdict"] = ("дождь" if t["score"] >= vision.VERDICT_WET
+                                            else "возможно" if t["score"] >= vision.VERDICT_MAYBE
+                                            else r.get("verdict"))
                         # замер пишем всегда; в эталон «сухо» попадут только сухие
                         dry = (not truth_wet) and (
                             r.get("score") or 0.0
@@ -247,10 +266,26 @@ class Detector:
                 await self.hass.async_add_executor_job(self._append_samples, pending)
                 await self.hass.async_add_executor_job(self.rebuild_reference)
             summary = vision.combine(results)
-            wet = (
+            cam_wet = (
                 summary.get("score", 0.0) >= self.threshold
                 and summary.get("verdict") == "дождь"
             )
+            # гистерезис: одиночные всплески (фонарь, машина, смена режима) дождём не считаем
+            raw_wet = bool(cam_wet or truth_wet)
+            if raw_wet:
+                self._wet_streak += 1
+                self._dry_streak = 0
+            else:
+                self._dry_streak += 1
+                self._wet_streak = 0
+            wet = bool(self.last.get("wet"))
+            if truth_wet:
+                wet = True                                    # «истина» (met.no) надёжна — сразу
+            elif self._wet_streak >= CAM_WET_CONFIRM:
+                wet = True
+            elif self._dry_streak >= CAM_DRY_CONFIRM:
+                wet = False
+            summary = {**summary, "camera_wet": bool(cam_wet), "truth_wet": bool(truth_wet)}
             prev = bool(self.last.get("wet"))
             self.last = {
                 "ts": ts.isoformat(timespec="seconds"),
@@ -347,6 +382,8 @@ class Detector:
             "summary": self.last.get("summary")
             or {"score": 0.0, "verdict": "нет данных"},
             "wet": bool(self.last.get("wet")),
+            "camera_wet": bool((self.last.get("summary") or {}).get("camera_wet")),
+            "truth_wet": bool((self.last.get("summary") or {}).get("truth_wet")),
             "truth_wet": bool(self.last.get("truth_wet")),
             "bucket": self.last.get("bucket"),
             "results": self.last.get("results") or [],
