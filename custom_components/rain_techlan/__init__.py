@@ -286,6 +286,19 @@ async def _async_run_reactions(hass: HomeAssistant, settings, detector, prev_wet
             detector.add_journal("action", "Полив остановлен (дождь)")
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("rain_techlan: стоп по дождю не удался: %s", err)
+    days = int(cfg.get("delay_days") or 0)
+    if now_wet and days > 0:
+        try:
+            await hass.services.async_call(DOMAIN, "set_rain_delay", {"days": days}, blocking=False)
+            detector.add_journal("action", f"Задержка полива: {days} дн. (дождь)")
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("rain_techlan: задержка дождя не выставлена: %s", err)
+    if (not now_wet) and cfg.get("clear_delay"):
+        try:
+            await hass.services.async_call(DOMAIN, "set_rain_delay", {"days": 0}, blocking=False)
+            detector.add_journal("action", "Задержка полива снята (дождь закончился)")
+        except Exception:  # noqa: BLE001
+            pass
     if cfg.get("notify"):
         try:
             await hass.services.async_call(
@@ -524,7 +537,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Handle options update — reload the integration."""
+    """Обновление настроек: «камерные» применяем на месте, остальное — перезагрузкой."""
+    store = hass.data.get(f"{DOMAIN}_store", {})
+    st = store.get(f"settings:{entry.entry_id}")
+    det = store.get(f"detector:{entry.entry_id}")
+    # ключи, которые применяются без перезагрузки (детектор, зоны, порог, запреты, реакции, времена)
+    live_keys = {CONF_CAMERAS, CONF_ZONES, CONF_CAM_THRESHOLD, CONF_TRUTH_ENTITY,
+                 CONF_INTERLOCKS, CONF_REACTIONS, "rain_delay_days", "zone_runtimes",
+                 CONF_SCAN_CAMERA}
+    try:
+        if st is not None:
+            st.reload()
+        if st is not None and det is not None:
+            det.cameras, det.zones = st.cameras, st.zones
+            det.truth_entity, det.threshold = st.truth_entity, st.threshold
+        if st is not None and not [k for k in (entry.options or {}) if k not in live_keys]:
+            return          # всё изменённое применяется на лету — перезагрузка не нужна
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("rain_techlan: живое применение настроек не удалось: %s", err)
     await hass.config_entries.async_reload(entry.entry_id)
 
 
