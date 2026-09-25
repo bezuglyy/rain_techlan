@@ -97,6 +97,8 @@ SITE_UTC_OFFSET = -7
 # Хранилище детектора в каталоге конфигурации HA
 STORE_DIR = ".storage/rain_techlan"
 CAMERA_THRESHOLD = 0.5          # оценка, при которой считаем «дождь»
+CAM_WET_CONFIRM = 2             # сколько проходов камеры подряд с «дождь» = подтверждено
+CAM_DRY_CONFIRM = 3             # сколько подряд «сухо» = дождь закончился
 CAMERA_MAX_SAMPLES = 5000       # сколько замеров держим
 JOURNAL_LIMIT = 500             # строк журнала
 
@@ -111,8 +113,10 @@ CONF_SCAN_CAMERA = "scan_interval_camera"
 
 DEFAULT_SCAN_CAMERA = 300       # сек между проходами камер
 DEFAULT_REACTIONS = {
-    "rain_start": {"enabled": True, "stop_all": True, "notify": True, "tts": False},
-    "rain_end": {"enabled": True, "notify": True, "tts": False},
+    # delay_days > 0 — ставить задержку полива на N дней при подтверждённом дожде
+    "rain_start": {"enabled": True, "stop_all": True, "notify": True, "tts": False, "delay_days": 1},
+    # clear_delay — снимать задержку, когда дождь закончился
+    "rain_end": {"enabled": True, "notify": True, "tts": False, "clear_delay": True},
 }
 DEFAULT_ZONES_CAM: list = []
 
