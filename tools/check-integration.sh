@@ -34,6 +34,9 @@ for t in "$ROOT"/tools/tests/test_*.py; do
   if out="$("$PY_BIN" "$t" 2>&1)"; then ok "$name ($(echo "$out" | tail -1 | tr -d '\n'))"; else no "$name"; echo "$out" | tail -6; fi
 done
 
+echo "== 4b. Структура панели =="
+if bash "$ROOT/tools/tests/test_panel_structure.sh" >/dev/null 2>&1; then ok "панель: раскладка/камеры/правка зон/меню"; else no "панель (структура)"; fi
+
 echo "== 5. Ключевые файлы =="
 for f in __init__.py auth.py api.py coordinator.py vision.py camera.py views.py panel.py settings.py interlocks.py switch.py number.py image.py sensor.py binary_sensor.py frontend/panel.js; do
   [ -s "$CC/$f" ] && ok "$f" || no "$f отсутствует"
