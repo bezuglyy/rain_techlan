@@ -1,9 +1,9 @@
 {
   "domain": "rain_techlan",
   "name": "Techlan Полив",
-  "version": "1.0.0",
-  "documentation": "https://github.com/davidsuarez82/rain_techlan",
-  "issue_tracker": "https://github.com/davidsuarez82/rain_techlan/issues",
+  "version": "1.1.0",
+  "documentation": "https://github.com/bezuglyy/rain_techlan",
+  "issue_tracker": "https://github.com/bezuglyy/rain_techlan/issues",
   "requirements": [
     "curl_cffi>=0.7.0"
   ],
