@@ -13,6 +13,8 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import (
+    CONF_FORECAST_ENTITIES,
+    DEFAULT_FORECAST_ENTITIES,
     CAMERA_THRESHOLD,
     CONF_CAM_THRESHOLD,
     CONF_CAMERAS,
@@ -77,6 +79,7 @@ class Settings:
         self.zones = [normalize_zone(z, i + 1) for i, z in enumerate(merged.get(CONF_ZONES) or []) if isinstance(z, dict)]
         self.threshold = _num(merged.get(CONF_CAM_THRESHOLD), CAMERA_THRESHOLD)
         self.truth_entity = str(merged.get(CONF_TRUTH_ENTITY) or "")
+        self.forecast_entities = [str(x) for x in (merged.get(CONF_FORECAST_ENTITIES) or DEFAULT_FORECAST_ENTITIES) if x]
         reactions = copy.deepcopy(DEFAULT_REACTIONS)
         for ev, cfg in (merged.get(CONF_REACTIONS) or {}).items():
             if ev in reactions and isinstance(cfg, dict):
@@ -101,6 +104,8 @@ class Settings:
                 options[CONF_REACTIONS] = reactions
             elif key == CONF_CAM_THRESHOLD:
                 options[CONF_CAM_THRESHOLD] = _num(value, CAMERA_THRESHOLD)
+            elif key == CONF_FORECAST_ENTITIES and isinstance(value, list):
+                options[CONF_FORECAST_ENTITIES] = [str(x) for x in value if x]
             elif key == CONF_TRUTH_ENTITY:
                 options[CONF_TRUTH_ENTITY] = str(value or "")
         self.hass.config_entries.async_update_entry(self.entry, options=options)
@@ -109,7 +114,8 @@ class Settings:
     def as_dict(self) -> dict[str, Any]:
         return {
             "cameras": self.cameras, "zones": self.zones, "threshold": self.threshold,
-            "truth_entity": self.truth_entity, "reactions": self.reactions,
+            "truth_entity": self.truth_entity,
+            "forecast_entities": self.forecast_entities, "reactions": self.reactions,
             "interlocks": self.interlocks,
         }
 
