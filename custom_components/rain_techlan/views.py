@@ -119,10 +119,13 @@ class RainSettingsView(HomeAssistantView):
         if not patch:
             return self.json({"ok": False, "error": "нет допустимых полей"})
         await st.async_save(patch)
-        det = _detector(request)
-        det.cameras, det.zones = st.cameras, st.zones
-        det.truth_entity, det.threshold = st.truth_entity, st.threshold
-        det.add_journal("settings", "Настройки обновлены: " + ", ".join(sorted(patch)))
+        try:  # детектор может пересоздаваться (перезагрузка записи) — это не ошибка
+            det = _detector(request)
+            det.cameras, det.zones = st.cameras, st.zones
+            det.truth_entity, det.threshold = st.truth_entity, st.threshold
+            det.add_journal("settings", "Настройки обновлены: " + ", ".join(sorted(patch)))
+        except Exception:  # noqa: BLE001
+            pass
         return self.json({"ok": True, "settings": st.as_dict()})
 
 
