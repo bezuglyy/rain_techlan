@@ -34,7 +34,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry,
     except Exception as err:  # noqa: BLE001
         _LOGGER.warning("rain_techlan: список зон не получен: %s", err)
         stations = []
-    entities = [RainDelayNumber(hass, entry, api, satellite_id)]
+    # задержку дождя показывает штатный сенсор (sensor.oroshenie_rain_delay),
+    # а меняется сервисом rain_techlan.set_rain_delay — дублирующее число не создаём
+    entities = []
     entities += [ZoneRuntimeNumber(hass, entry, s, satellite_id) for s in stations if s.get("id")]
     async_add_entities(entities)
 
@@ -43,6 +45,7 @@ class RainDelayNumber(NumberEntity):
     """Задержка полива из-за дождя, дней."""
 
     _attr_has_entity_name = True
+    _attr_should_poll = True          # значение читаем из координатора (облако)
     _attr_name = "Задержка дождя"
     _attr_icon = "mdi:weather-rainy"
     _attr_native_min_value = 0
@@ -66,6 +69,24 @@ class RainDelayNumber(NumberEntity):
 
     @property
     def native_value(self) -> float:
+        """Значение из облака: ищем координатор записи с satellite.rainDelay; иначе — штатный сенсор."""
+        try:
+            store = (self.hass.data.get(DOMAIN) or {}).get(self.entry.entry_id) or {}
+            for coord in store.values():
+                data = getattr(coord, "data", None)
+                if isinstance(data, dict):
+                    sat = data.get("satellite")
+                    if isinstance(sat, dict) and sat.get("rainDelay") is not None:
+                        return float(sat["rainDelay"])
+        except Exception:  # noqa: BLE001
+            pass
+        # запасной вариант: значение штатного сенсора задержки (он тянет то же облако)
+        for st in self.hass.states.async_all("sensor"):
+            if st.entity_id.endswith("oroshenie_rain_delay") and st.state not in ("unknown", "unavailable"):
+                try:
+                    return float(st.state)
+                except ValueError:
+                    break
         return self._value
 
     async def async_set_native_value(self, value: float) -> None:
@@ -74,6 +95,12 @@ class RainDelayNumber(NumberEntity):
         self._value = float(days)
         opts = dict(self.entry.options); opts["rain_delay_days"] = days
         self.hass.config_entries.async_update_entry(self.entry, options=opts)
+        try:
+            rt = ((self.hass.data.get(DOMAIN) or {}).get(self.entry.entry_id) or {}).get("realtime")
+            if rt:
+                await rt.async_request_refresh()
+        except Exception:  # noqa: BLE001
+            pass
         self.async_write_ha_state()
 
 
@@ -81,6 +108,7 @@ class ZoneRuntimeNumber(NumberEntity):
     """Сколько минут работает зона при включении (хранится в настройках)."""
 
     _attr_has_entity_name = True
+    _attr_should_poll = True
     _attr_icon = "mdi:timer-outline"
     _attr_native_min_value = 1
     _attr_native_max_value = 240
