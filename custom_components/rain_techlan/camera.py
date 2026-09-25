@@ -25,6 +25,8 @@ from homeassistant.core import HomeAssistant
 
 from . import vision
 from .const import (
+    SEASON_MIN_THRESHOLD,
+    SEASON_RELAX_STEP,
     CAM_DRY_CONFIRM,
     CAM_WET_CONFIRM,
     CAMERA_MAX_SAMPLES,
@@ -67,6 +69,7 @@ class Detector:
         self.reference: dict[str, Any] = {}
         self._recent: dict[str, list] = {}
         self._wet_streak = 0
+        self._sim_wet = None      # тест-режим «смоделировать дождь»
         self._dry_streak = 0
         self.last: dict[str, Any] = {}
         self.journal: list[dict[str, Any]] = []
@@ -178,6 +181,16 @@ class Detector:
         )
         return self.reference
 
+    def irrigation_running(self) -> bool:
+        """Идёт ли полив прямо сейчас (для отличия дождя от спринклеров)."""
+        try:
+            for st in self.hass.states.async_all("binary_sensor"):
+                if st.entity_id.endswith("oroshenie_any_zone_running") and st.state == "on":
+                    return True
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
     def truth_is_wet(self) -> bool:
         """Идёт ли дождь по «истине» (сенсор дождя/met.no в HA)."""
         if not self.truth_entity:
@@ -208,6 +221,8 @@ class Detector:
             ts = _now()
             bucket = vision.bucket_for(ts, SITE_UTC_OFFSET)
             truth_wet = self.truth_is_wet()
+            if self._sim_wet is not None:      # тест-режим
+                truth_wet = self._sim_wet
             results: list[dict[str, Any]] = []
             pending: list[dict[str, Any]] = []
             errors: list[str] = []
@@ -266,11 +281,39 @@ class Detector:
                 await self.hass.async_add_executor_job(self._append_samples, pending)
                 await self.hass.async_add_executor_job(self.rebuild_reference)
             summary = vision.combine(results)
+            # сезонная адаптация: давно нет дождя → порог чуть мягче (в пределах безопасного)
+            eff = self.threshold
+            try:
+                rows = self._recent
+                last_wet_ts = None
+                for _k, items in rows.items():
+                    for feats, dry in items:
+                        if not dry:
+                            last_wet_ts = True
+                            break
+                if not last_wet_ts:
+                    eff = max(SEASON_MIN_THRESHOLD, self.threshold - SEASON_RELAX_STEP)
+            except Exception:  # noqa: BLE001
+                pass
+            self.effective_threshold = eff
             cam_wet = (
-                summary.get("score", 0.0) >= self.threshold
+                summary.get("score", 0.0) >= eff
                 and summary.get("verdict") == "дождь"
             )
+            # камера может «видеть воду» от собственного полива — это не дождь
+            irrigating = self.irrigation_running()
+            if cam_wet and irrigating and not truth_wet:
+                cam_wet = False
+                summary = {**summary, "camera_wet_irrigation": True}
+                self.add_journal("note", "Покрытие мокрое, но идёт полив — это не дождь")
             # гистерезис: одиночные всплески (фонарь, машина, смена режима) дождём не считаем
+            camera_ok = bool(results) and not (len(self.cameras) and len(errors) >= len(self.cameras))
+            if not camera_ok and not truth_wet:
+                # камеры недоступны и «истина» молчит — состояние не меняем (fail-safe)
+                wet = bool(self.last.get("wet"))
+                self.last = {**self.last, "camera_ok": False}
+                self.add_journal("error", f"Камеры недоступны ({len(errors)}): состояние не меняем")
+                return self.last
             raw_wet = bool(cam_wet or truth_wet)
             if raw_wet:
                 self._wet_streak += 1
@@ -288,6 +331,7 @@ class Detector:
             summary = {**summary, "camera_wet": bool(cam_wet), "truth_wet": bool(truth_wet)}
             prev = bool(self.last.get("wet"))
             self.last = {
+                "sources": {"camera": bool(cam_wet), "truth": bool(truth_wet)},
                 "ts": ts.isoformat(timespec="seconds"),
                 "bucket": bucket,
                 "results": results,
@@ -375,6 +419,20 @@ class Detector:
         self.add_journal("learn", f"Помечено «сухо»: {changed} замеров за {hours} ч")
         return changed
 
+    def _series(self, hours: int = 24, points: int = 48) -> list[dict[str, Any]]:
+        """Компактный ряд оценок камеры за сутки (для мини-графика)."""
+        out, step = [], max(1, int(len(self.samples()) / points) or 1)
+        try:
+            rows = self.samples()[-1000:]
+            for i, r in enumerate(rows):
+                if i % step:
+                    continue
+                out.append({"ts": r.get("ts"), "score": r.get("score"),
+                            "camera": r.get("camera"), "truth": bool(r.get("truth_wet"))})
+        except Exception:  # noqa: BLE001
+            pass
+        return out[-points:]
+
     def state(self) -> dict[str, Any]:
         """Текущее состояние для панели/сущностей."""
         return {
@@ -384,8 +442,15 @@ class Detector:
             "wet": bool(self.last.get("wet")),
             "camera_wet": bool((self.last.get("summary") or {}).get("camera_wet")),
             "truth_wet": bool((self.last.get("summary") or {}).get("truth_wet")),
+            "camera_ok": self.last.get("camera_ok", True),
+            "irrigation": bool(self.last.get("irrigation")),
+            "sources": self.last.get("sources") or {},
+            "wet_streak": self.last.get("wet_streak"),
+            "dry_streak": self.last.get("dry_streak"),
             "truth_wet": bool(self.last.get("truth_wet")),
             "bucket": self.last.get("bucket"),
+            "wet_streak": self.last.get("wet_streak"),
+            "dry_streak": self.last.get("dry_streak"),
             "results": self.last.get("results") or [],
             "errors": self.last.get("errors") or [],
             "cameras": self.cameras,
@@ -393,4 +458,6 @@ class Detector:
             "reference_groups": len(self.reference),
             "samples": self._samples_cached,
             "threshold": self.threshold,
+            "effective_threshold": getattr(self, "effective_threshold", self.threshold),
+            "series": self._series(),
         }
