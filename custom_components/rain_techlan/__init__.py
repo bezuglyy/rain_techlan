@@ -64,6 +64,7 @@ _CARD_RESOURCE_VERSIONED = False
 SERVICES = [
     "scan",
     "learn_dry",
+    "simulate_rain",
     "start_zone",
     "start_program",
     "stop_zone",
@@ -264,6 +265,15 @@ def _guard_interlocks(hass: HomeAssistant, action: str) -> None:
             rules.extend(val.interlocks or [])
     if not rules:
         return
+    # превентивно: если ждут дождь (прогноз) — не начинаем полив
+    for key, val in hass.data.get(f"{DOMAIN}_store", {}).items():
+        if not key.startswith("settings:"):
+            continue
+        for ent in (getattr(val, "forecast_entities", None) or []):
+            st = hass.states.get(ent)
+            if st is not None and st.state == "on":
+                hass.bus.async_fire("rain_techlan_action", {"event": "forecast_block", "entity": ent})
+                raise ServiceValidationError(f"Полив не начат: ожидается дождь ({ent})")
     res = evaluate_interlocks(hass, rules, action)
     if res.get("blocked"):
         hass.bus.async_fire("rain_techlan_interlock",
@@ -280,6 +290,11 @@ async def _async_run_reactions(hass: HomeAssistant, settings, detector, prev_wet
     if not cfg.get("enabled", True):
         return
     summary = detector.last.get("summary") or {}
+    hass.bus.async_fire("rain_techlan_action", {
+        "event": "rain_start" if now_wet else "rain_end",
+        "sources": detector.last.get("sources") or {},
+        "score": (detector.last.get("summary") or {}).get("score"),
+    })
     if now_wet and cfg.get("stop_all"):
         try:
             await hass.services.async_call(DOMAIN, "stop_all_zones", {}, blocking=False)
@@ -287,7 +302,12 @@ async def _async_run_reactions(hass: HomeAssistant, settings, detector, prev_wet
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("rain_techlan: стоп по дождю не удался: %s", err)
     days = int(cfg.get("delay_days") or 0)
-    if now_wet and days > 0:
+    # пауза на дни — только при согласии источников (или если камера недоступна)
+    summary = detector.last.get("summary") or {}
+    sources = (detector.last.get("sources") or {})
+    camera_ok = detector.last.get("camera_ok", True)
+    agree = (sources.get("truth") and sources.get("camera")) or (sources.get("truth") and not camera_ok)
+    if now_wet and days > 0 and agree:
         try:
             await hass.services.async_call(DOMAIN, "set_rain_delay", {"days": days}, blocking=False)
             detector.add_journal("action", f"Задержка полива: {days} дн. (дождь)")
@@ -318,6 +338,15 @@ async def _handle_camera_scan(call: ServiceCall) -> None:
     hass = call.hass
     for detector in _camera_stores(hass)[1]:
         await detector.async_scan()
+
+
+async def _handle_simulate_rain(call: ServiceCall) -> None:
+    """Тест-режим: «wet»/«dry»/«auto» — смоделировать дождь для проверки цепочки."""
+    hass = call.hass
+    val = {"wet": True, "dry": False}.get(str(call.data.get("state") or "auto").lower())
+    for det in _camera_stores(hass)[1]:
+        det._sim_wet = val
+        det.add_journal("test", f"Тест-режим: {call.data.get('state')}")
 
 
 async def _handle_learn_dry(call: ServiceCall) -> None:
@@ -448,6 +477,7 @@ _SERVICE_HANDLERS = {
     "set_weather_adjust_manual": _handle_weather_adjust_manual,
     "scan": _handle_camera_scan,
     "learn_dry": _handle_learn_dry,
+    "simulate_rain": _handle_simulate_rain,
 }
 
 
