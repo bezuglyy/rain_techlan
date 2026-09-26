@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
+import numpy as np
 from homeassistant.core import HomeAssistant
 
 from . import vision
@@ -109,6 +110,51 @@ class Detector:
 
     async def _async_samples(self) -> list[dict[str, Any]]:
         return await self.hass.async_add_executor_job(self.samples)
+
+    def _update_baseline(self) -> None:
+        """Сохранить текущие кадры как «сухой» базис (executor)."""
+        for cam, data in (self._frames_this_pass or {}).items():
+            try:
+                (self.dir / "base").mkdir(exist_ok=True)
+                (self.dir / "base" / f"{cam}.jpg").write_bytes(data)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def heatmap(self, camera: str) -> bytes | None:
+        """Тепловая карта: где стало темнее (мокро) — красным поверх кадра."""
+        from PIL import Image, ImageFilter
+        import io as _io
+        base_p = self.dir / "base" / f"{camera}.jpg"
+        cur_p = self.dir / "last" / f"{camera}.jpg"
+        if not base_p.exists() or not cur_p.exists():
+            return None
+        try:
+            base = Image.open(base_p).convert("L")
+            cur = Image.open(cur_p).convert("RGB")
+            if base.size != cur.size:
+                base = base.resize(cur.size)
+            b = np.asarray(base).astype(np.float32)
+            c = np.asarray(cur.convert("L")).astype(np.float32)
+            dark = b - c                                   # >0 — стало темнее (мокро)
+            thr = np.maximum(8.0, 0.10 * b)                # 10 % от яркости базиса
+            mask = np.clip((dark - thr) / np.maximum(thr, 1.0), 0, 1)
+            mask = np.asarray(Image.fromarray((mask * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(3))) / 255.0
+            out = np.asarray(cur).astype(np.float32)
+            red = np.zeros_like(out); red[:, :, 0] = 255
+            out = out * (1 - 0.55 * mask[..., None]) + red * (0.55 * mask[..., None])
+            img = Image.fromarray(np.clip(out, 0, 255).astype(np.uint8))
+            buf = _io.BytesIO(); img.save(buf, format="JPEG", quality=80)
+            data = buf.getvalue()
+            try:
+                (Path(__file__).parent / "frontend" / f"heat_{camera}.jpg").write_bytes(data)
+            except Exception:  # noqa: BLE001
+                pass
+            return data
+        except Exception:  # noqa: BLE001
+            return None
+
+    async def async_heatmap(self, camera: str) -> bytes | None:
+        return await self.hass.async_add_executor_job(self.heatmap, camera)
 
     def _store_frame(self, camera: str, data: bytes) -> None:
         """Сохранить последний кадр (чистый — панели, размеченный — сущностям image)."""
@@ -224,6 +270,7 @@ class Detector:
             if self._sim_wet is not None:      # тест-режим
                 truth_wet = self._sim_wet
             results: list[dict[str, Any]] = []
+            self._frames_this_pass: dict[str, bytes] = {}
             pending: list[dict[str, Any]] = []
             errors: list[str] = []
             async with aiohttp.ClientSession() as session:
@@ -238,6 +285,7 @@ class Detector:
                         await self.hass.async_add_executor_job(
                             self._store_frame, cid, data
                         )
+                        self._frames_this_pass[cid] = data
                     try:
                         img = vision.decode(data)
                     except Exception as err:  # noqa: BLE001
@@ -342,11 +390,15 @@ class Detector:
                 "zones": len(self.zones),
                 "cameras": len(self.cameras),
             }
+            # «сухой» базовый кадр — для тепловой карты отклонений
+            if not truth_wet:
+                await self.hass.async_add_executor_job(self._update_baseline)
             # разметка кадра для панели/дашборда (и в статику панели)
             for cam in self.cameras:
                 cid = str(cam.get("id") or cam.get("name") or "cam")
                 try:
                     await self.hass.async_add_executor_job(self.annotated_frame, cid)
+                    await self.hass.async_add_executor_job(self.heatmap, cid)
                 except Exception:  # noqa: BLE001
                     pass
             if wet != prev:
