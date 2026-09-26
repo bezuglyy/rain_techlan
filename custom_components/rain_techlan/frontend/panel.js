@@ -207,53 +207,6 @@ class RainTechlanPanel extends HTMLElement {
       this._layout = Number(e.target.value);
       localStorage.setItem("rain_layout", String(this._layout));
       // карточка «Сейчас»: вердикт, источники, полив, задержка, свежесть кадра
-    const sources = det.sources || {};
-    const srcCam = this.$("srcCam"), srcTruth = this.$("srcTruth");
-    if (srcCam) {
-      const camOk = det.camera_ok !== false;
-      srcCam.textContent = "камера " + (camOk ? (sources.camera ? "мокро ✓" : "сухо") : "нет данных");
-      srcCam.style.color = !camOk ? "#b45309" : sources.camera ? "#b91c1c" : "#15803d";
-      srcTruth.textContent = "датчик " + (sources.truth ? "дождь ✓" : "сухо");
-      srcTruth.style.color = sources.truth ? "#b91c1c" : "#15803d";
-      this.$("nowVerdict").className = "badge " + (det.wet ? "wet" : "mutedbadge");
-      this.$("nowVerdict").textContent = det.wet ? "ДОЖДЬ" : "сухо";
-      const irrS = this._hass.states["binary_sensor.oroshenie_any_zone_running"];
-      this.$("nowIrrigation").textContent = irrS && irrS.state === "on" ? "полив идёт" : "полив не идёт";
-      const dl = this._hass.states["sensor.oroshenie_rain_delay"];
-      this.$("nowDelay").textContent = "задержка: " + (dl ? dl.state : "—") + " дн";
-      const age = det.ts ? Math.round((Date.now() - Date.parse(det.ts)) / 1000) : null;
-      this.$("nowFresh").textContent = age !== null ? `кадр ${age} с назад` : "";
-      const errs = det.errors || [];
-      const banner = this.$("errBanner");
-      if (banner) {
-        banner.style.display = errs.length ? "" : "none";
-        banner.textContent = errs.length ? "⚠ Камеры: " + errs.join("; ") : "";
-      }
-    }
-    // мини-график 24 ч: оценка камеры (линия) + метки «истины» (точки)
-    const series = det.series || [];
-    const sp = this.$("spark");
-    if (sp) {
-      if (series.length < 2) {
-        sp.innerHTML = `<span class="muted small">график появится после нескольких проходов</span>`;
-      } else {
-        const W = 640, H = 60, thr = det.effective_threshold ?? det.threshold ?? 0.5;
-        const pts = series.map((r, i) => {
-          const x = (i / (series.length - 1)) * W;
-          const y = H - Math.max(0, Math.min(1, Number(r.score) || 0)) * H;
-          return `${x.toFixed(1)},${y.toFixed(1)}`;
-        }).join(" ");
-        const truth = series.map((r, i) => r.truth
-          ? `<circle cx="${((i / (series.length - 1)) * W).toFixed(1)}" cy="6" r="2.5" fill="#b91c1c"/>` : "").join("");
-        const ty = (H - thr * H).toFixed(1);
-        sp.innerHTML = `<svg viewBox="0 0 ${W} ${H + 10}" style="width:100%;height:80px">
-            <line x1="0" y1="${ty}" x2="${W}" y2="${ty}" stroke="#64748b" stroke-dasharray="4 4"/>
-            <polyline fill="none" stroke="#0f766e" stroke-width="2" points="${pts}"/>
-            ${truth}
-          </svg>
-          <div class="muted small">24 ч: оценка камеры (линия), пунктир — порог ${thr}, красные точки — «истина» (датчик)</div>`;
-      }
-    }
     this._renderFrames();
     };
     for (const [id, days] of [["p1",1],["p2",2],["p3",3],["p7",7],["p0",0]]) {
@@ -270,29 +223,6 @@ class RainTechlanPanel extends HTMLElement {
       this._oneCam = e.target.value;
       localStorage.setItem("rain_one_cam", this._oneCam);
       // карточка «Сейчас»: вердикт, источники, полив, задержка, свежесть кадра
-    const sources = det.sources || {};
-    const srcCam = this.$("srcCam"), srcTruth = this.$("srcTruth");
-    if (srcCam) {
-      const camOk = det.camera_ok !== false;
-      srcCam.textContent = "камера " + (camOk ? (sources.camera ? "мокро ✓" : "сухо") : "нет данных");
-      srcCam.style.color = !camOk ? "#b45309" : sources.camera ? "#b91c1c" : "#15803d";
-      srcTruth.textContent = "датчик " + (sources.truth ? "дождь ✓" : "сухо");
-      srcTruth.style.color = sources.truth ? "#b91c1c" : "#15803d";
-      this.$("nowVerdict").className = "badge " + (det.wet ? "wet" : "mutedbadge");
-      this.$("nowVerdict").textContent = det.wet ? "ДОЖДЬ" : "сухо";
-      const irrS = this._hass.states["binary_sensor.oroshenie_any_zone_running"];
-      this.$("nowIrrigation").textContent = irrS && irrS.state === "on" ? "полив идёт" : "полив не идёт";
-      const dl = this._hass.states["sensor.oroshenie_rain_delay"];
-      this.$("nowDelay").textContent = "задержка: " + (dl ? dl.state : "—") + " дн";
-      const age = det.ts ? Math.round((Date.now() - Date.parse(det.ts)) / 1000) : null;
-      this.$("nowFresh").textContent = age !== null ? `кадр ${age} с назад` : "";
-      const errs = det.errors || [];
-      const banner = this.$("errBanner");
-      if (banner) {
-        banner.style.display = errs.length ? "" : "none";
-        banner.textContent = errs.length ? "⚠ Камеры: " + errs.join("; ") : "";
-      }
-    }
     this._renderFrames();
     };
     this.$("edit").classList.toggle("primary", this._editing);
@@ -411,6 +341,7 @@ class RainTechlanPanel extends HTMLElement {
     this.$("thrv").textContent = set.threshold ?? 0.5;
     if (document.activeElement !== this.$("truth")) this.$("truth").value = set.truth_entity || "";
     this.$("rd").value = (this._hass.states["number.poliv_rain_bird_zaderzhka_dozhdia"] || {}).state || 0;
+    this._renderSpark(det);
     // карточка «Сейчас»: вердикт, источники, полив, задержка, свежесть кадра
     const sources = det.sources || {};
     const srcCam = this.$("srcCam"), srcTruth = this.$("srcTruth");
@@ -452,6 +383,34 @@ class RainTechlanPanel extends HTMLElement {
       const rules2 = rules.filter((_, i) => i !== Number(b.dataset.il));
       this._hass.callApi("POST", `${API}/interlocks`, { rules: rules2 }).then(() => this._load());
     });
+  }
+
+  _renderSpark(det) {
+    // мини-график 24 ч: оценка камеры (линия) + метки «истины» (точки)
+    const series = (det && det.series) || [];
+    const sp = this.$("spark");
+    if (!sp) return;
+    if (sp) {
+      if (series.length < 2) {
+        sp.innerHTML = `<span class="muted small">график появится после нескольких проходов</span>`;
+      } else {
+        const W = 640, H = 60, thr = det.effective_threshold ?? det.threshold ?? 0.5;
+        const pts = series.map((r, i) => {
+          const x = (i / (series.length - 1)) * W;
+          const y = H - Math.max(0, Math.min(1, Number(r.score) || 0)) * H;
+          return `${x.toFixed(1)},${y.toFixed(1)}`;
+        }).join(" ");
+        const truth = series.map((r, i) => r.truth
+          ? `<circle cx="${((i / (series.length - 1)) * W).toFixed(1)}" cy="6" r="2.5" fill="#b91c1c"/>` : "").join("");
+        const ty = (H - thr * H).toFixed(1);
+        sp.innerHTML = `<svg viewBox="0 0 ${W} ${H + 10}" style="width:100%;height:80px">
+            <line x1="0" y1="${ty}" x2="${W}" y2="${ty}" stroke="#64748b" stroke-dasharray="4 4"/>
+            <polyline fill="none" stroke="#0f766e" stroke-width="2" points="${pts}"/>
+            ${truth}
+          </svg>
+          <div class="muted small">24 ч: оценка камеры (линия), пунктир — порог ${thr}, красные точки — «истина» (датчик)</div>`;
+      }
+    }
   }
 
   /* ------------------------------------------------- кадры: сетка 1 / 2 / 4 */
