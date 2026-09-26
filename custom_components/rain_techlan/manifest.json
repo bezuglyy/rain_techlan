@@ -1,7 +1,7 @@
 {
   "domain": "rain_techlan",
   "name": "Techlan Полив",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "documentation": "https://github.com/bezuglyy/rain_techlan",
   "issue_tracker": "https://github.com/bezuglyy/rain_techlan/issues",
   "requirements": [
