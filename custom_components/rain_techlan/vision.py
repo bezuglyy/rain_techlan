@@ -41,7 +41,7 @@ MIN_ABS = {"gloss": 0.004, "bright": 0.020, "ripple": 1.0, "sat": 2.0,
 
 # Веса признаков в оценке (ночь — опора на блики/рябь, день — плюс затемнение)
 WEIGHTS_NIGHT = {"gloss": 0.3, "ripple": 0.15, "sharp": 0.15, "mean_down": 0.4}
-WEIGHTS_LIGHT = {"gloss": 0.35, "ripple": 0.2, "sharp": 0.1, "mean_down": 0.35}
+WEIGHTS_LIGHT = {"gloss": 0.30, "ripple": 0.15, "sharp": 0.10, "mean_down": 0.25, "std": 0.20}
 
 VERDICT_WET = 0.5  # «дождь идёт»
 VERDICT_MAYBE = 0.25  # «возможно»
@@ -232,7 +232,8 @@ def score(
     sharp = _dev(feats, stat.get("sharp") or {}, "sharp")
     dark = _dev(feats, stat.get("mean") or {}, "mean", up=False)
     weights = WEIGHTS_NIGHT if used == "night" else WEIGHTS_LIGHT
-    parts = {"gloss": gloss, "ripple": ripple, "sharp": sharp}
+    parts = {"gloss": gloss, "ripple": ripple, "sharp": sharp,
+             "std": _dev(feats, stat.get("std") or {}, "std")}   # днём разброс растёт (мокрый бетон)
     if "mean_down" in weights:
         parts["mean_down"] = dark
     total = sum(weights[k] * max(0.0, min(1.0, parts.get(k, 0.0))) for k in weights)
