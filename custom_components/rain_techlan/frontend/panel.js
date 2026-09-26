@@ -257,7 +257,8 @@ class RainTechlanPanel extends HTMLElement {
     this._renderFrames();
     };
     for (const [id, days] of [["p1",1],["p2",2],["p3",3],["p7",7],["p0",0]]) {
-      this.$("${id}").onclick = () => this._svc("rain_techlan", "set_rain_delay", { days });
+      const btn = this.$(`${id}`);
+      if (btn) btn.onclick = () => this._svc("rain_techlan", "set_rain_delay", { days });
     }
     this.$("edit").onclick = () => {
       this._editing = !this._editing;
