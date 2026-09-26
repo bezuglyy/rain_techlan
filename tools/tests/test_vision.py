@@ -85,5 +85,20 @@ check("evaluate: зона + весь кадр", {r["zone"] for r in res} == {"_a
 check("combine: без дождя", V.combine(res)["verdict"] == "сухо")
 check("is_wet: порог", V.is_wet({"score": 0.5}) and not V.is_wet({"score": 0.49}))
 
+# --- дневной режим: рост разброса (мокрый бетон) повышает оценку
+import math
+base = {"mean": {"median": 134.0, "p05": 128.0, "p25": 130.0, "p75": 138.0, "p95": 140.0, "n": 20},
+        "std": {"median": 40.0, "p05": 38.0, "p25": 39.0, "p75": 42.0, "p95": 43.0, "n": 20},
+        "gloss": {"median": 0.002, "p05": 0.0, "p25": 0.001, "p75": 0.003, "p95": 0.004, "n": 20},
+        "ripple": {"median": 9.6, "p05": 9.0, "p25": 9.3, "p75": 10.0, "p95": 10.4, "n": 20},
+        "sharp": {"median": 1093.0, "p05": 1000.0, "p25": 1050.0, "p75": 1150.0, "p95": 1200.0, "n": 20}}
+dry = {"mean": 134.0, "std": 40.0, "gloss": 0.002, "ripple": 9.6, "sharp": 1093.0, "bright": 0.0, "sat": 10.0}
+wet = dict(dry); wet["std"] = 56.0; wet["gloss"] = 0.043; wet["mean"] = 122.6
+s_dry = V.score(dry, {"day": base}, "day")
+s_wet = V.score(wet, {"day": base}, "day")
+check("днём сухой кадр ≈ 0", s_dry["score"] <= 0.1, str(s_dry))
+check("днём мокрый (std+глянец+затемнение) → дождь", s_wet["score"] >= V.VERDICT_WET, str(s_wet))
+check("std участвует в дневной оценке", "std" in s_wet.get("dev", {}), str(s_wet.get("dev")))
+
 print(f"\n  ИТОГ: PASS={PASS} FAIL={FAIL}")
 sys.exit(1 if FAIL else 0)
