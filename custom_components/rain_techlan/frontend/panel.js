@@ -128,6 +128,7 @@ class RainTechlanPanel extends HTMLElement {
               <button id="draw">＋ Добавить зону</button>
               <button id="zExport">⭳ Зоны</button>
               <button id="zImport">⭱ Импорт зон</button>
+              <button id="heatBtn">🌡 Тепловая карта</button>
               <input id="zFile" type="file" accept=".json" style="display:none">
               <button id="edit">✎ Редактировать зоны</button>
               <label class="small" id="camselLabel">Камера:</label>
@@ -307,6 +308,11 @@ class RainTechlanPanel extends HTMLElement {
     this.$("thr").oninput = (e) => { this.$("thrv").textContent = e.target.value; };
     this.$("thr").onchange = (e) => this._save({ rain_threshold: Number(e.target.value) });
     this.$("truthset").onclick = () => this._save({ truth_entity: this.$("truth").value.trim() });
+    this.$("heatBtn").onclick = () => {
+      this._heat = !this._heat;
+      this.$("heatBtn").classList.toggle("primary", this._heat);
+      this._renderFrames();
+    };
     this.$("iadd").onclick = () => this._addInterlock();
     this.$("jf").onchange = () => this._renderJournal();
     this.$("jCsv").onclick = () => this._exportJournal("csv");
@@ -466,7 +472,7 @@ class RainTechlanPanel extends HTMLElement {
     const ts = det.ts || "";
     box.innerHTML = visible.map((c) => `
       <div class="cell" data-cam="${c.id}">
-        <img src="/rain_techlan/raw_${encodeURIComponent(c.id)}.jpg?t=${encodeURIComponent(ts)}" alt="${c.name || c.id}">
+        <img src="/rain_techlan/${this._heat ? "heat_" : "raw_"}${encodeURIComponent(c.id)}.jpg?t=${encodeURIComponent(ts)}" alt="${c.name || c.id}">
         <div class="cap">${c.name || c.id}</div>
         <div class="ovl" data-cam="${c.id}">${this._zonesHtml(c.id)}</div>
       </div>`).join("");
